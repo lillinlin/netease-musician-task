@@ -222,7 +222,19 @@ def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
             page.wait_for_timeout(300)
 
     if btn_loc is None:
-        _emit(account_id, "日常签到：未找到签到按钮（可能未登录或页面结构变化）", "warn")
+        # 检查是否已签到（已签到时按钮变为 u-btn2-dis，无 data-action='checkin'）
+        already_signed = False
+        for scope in scopes(page):
+            try:
+                if scope.locator("a.u-btn2-dis").count() > 0:
+                    already_signed = True
+                    break
+            except Exception:
+                continue
+        if already_signed:
+            _emit(account_id, "日常签到：今日已签到")
+        else:
+            _emit(account_id, "日常签到：未找到签到按钮（可能未登录或页面结构变化）", "warn")
         return
 
     # 判断是否已签到：data-action='checkin' 存在即视为可签，点击并监听接口确认。
