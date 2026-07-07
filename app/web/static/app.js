@@ -12,7 +12,10 @@ const api = async (url, opts = {}) => {
   return res.status === 204 ? null : res.json();
 };
 const escapeHtml = (s) =>
-  String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  String(s).replace(
+    /[&<>]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
+  );
 
 // ---------- 运行日志弹窗 ----------
 // 当前「运行日志」弹窗正在查看的账号；WS 日志按此过滤显示
@@ -35,7 +38,8 @@ async function openViewModal(accountId, phone) {
     const data = await api(`/api/tasks/${accountId}/live`);
     for (const m of data.logs || []) {
       if (m.type === "log") appendLog(m.ts, m.line, m.level);
-      else if (m.type === "status") appendLog(m.ts, `【状态】${m.status} ${m.detail || ""}`, "info");
+      else if (m.type === "status")
+        appendLog(m.ts, `【状态】${m.status} ${m.detail || ""}`, "info");
     }
     if (data.qr && data.qr.qr_url) showQR(data.qr.qr_url, data.qr.tip);
   } catch (err) {
@@ -56,7 +60,9 @@ function showQR(url, tip) {
   $("#qr-img").src = url;
   $("#qr-box").classList.remove("hidden");
 }
-function hideQR() { $("#qr-box").classList.add("hidden"); }
+function hideQR() {
+  $("#qr-box").classList.add("hidden");
+}
 
 // ---------- WebSocket ----------
 let ws;
@@ -64,7 +70,10 @@ function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => setConn(true);
-  ws.onclose = () => { setConn(false); setTimeout(connectWS, 2000); };
+  ws.onclose = () => {
+    setConn(false);
+    setTimeout(connectWS, 2000);
+  };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
 }
 function setConn(on) {
@@ -73,7 +82,8 @@ function setConn(on) {
 }
 function handleEvent(msg) {
   const modalOpen = !$("#modal-run").classList.contains("hidden");
-  const forThisView = viewingAccountId != null && Number(msg.account_id) === viewingAccountId;
+  const forThisView =
+    viewingAccountId != null && Number(msg.account_id) === viewingAccountId;
 
   if (msg.type === "log") {
     if (modalOpen && forThisView) appendLog(msg.ts, msg.line, msg.level);
@@ -108,24 +118,32 @@ async function loadAccounts() {
   $("#empty-hint").classList.toggle("hidden", accounts.length > 0);
   for (const a of accounts) {
     const status = a.cookie_status || "unknown";
-    const statusText = { ok: "有效", expired: "过期", unknown: "未知" }[status] || status;
+    const statusText =
+      { ok: "有效", expired: "过期", unknown: "未知" }[status] || status;
     const runTime = a.run_time
       ? escapeHtml(a.run_time)
       : `${escapeHtml(globalSendTime)} <span class="tag-global">全局</span>`;
     const running = runningAccountId === a.id;
     const actionBtn = running
       ? `<button class="btn btn-sm btn-view" data-act="view" data-id="${a.id}" data-phone="${escapeHtml(a.phone)}">查看</button>`
-      : `<button class="btn btn-sm" data-act="run" data-id="${a.id}">执行</button>`;
+      : `<button class="btn btn-sm" data-act="run" data-id="${a.id}" data-phone="${escapeHtml(a.phone)}">执行</button>`;
+    const enabled = !!a.enabled;
+    const enabledBadge = enabled
+      ? `<span class="badge ok">启用</span>`
+      : `<span class="badge expired">暂停</span>`;
+    const toggleBtn = `<button class="btn btn-sm" data-act="toggle" data-id="${a.id}" data-enabled="${enabled ? 1 : 0}">${enabled ? "暂停" : "启用"}</button>`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td data-label="手机号">${escapeHtml(a.phone)}</td>
       <td data-label="昵称">${escapeHtml(a.nickname || "-")}</td>
       <td data-label="Cookie 状态"><span class="badge ${status}">${statusText}</span></td>
+      <td data-label="状态">${enabledBadge}</td>
       <td data-label="运行时间">${runTime}</td>
       <td data-label="本月发布">${a.monthly_sends || 0}</td>
       <td data-label="操作" class="cell-actions">
         <button class="btn btn-sm btn-primary" data-act="login" data-id="${a.id}" data-phone="${escapeHtml(a.phone)}">登录</button>
         ${actionBtn}
+        ${toggleBtn}
         <button class="btn btn-sm" data-act="edit" data-id="${a.id}">编辑</button>
         <button class="btn btn-sm btn-danger" data-act="delete" data-id="${a.id}" data-phone="${escapeHtml(a.phone)}">删除</button>
       </td>`;
@@ -137,14 +155,18 @@ async function refreshGlobalSendTime() {
   try {
     const s = await api("/api/settings");
     if (s.default_send_time) globalSendTime = s.default_send_time;
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 async function refreshActiveAndList() {
   try {
     const data = await api("/api/tasks/active");
     runningAccountId = data.active ? Number(data.active.account_id) : null;
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    /* ignore */
+  }
   await loadAccounts();
 }
 
@@ -157,7 +179,14 @@ $("#acc-body").addEventListener("click", async (e) => {
     if (act === "login") {
       openLoginConfirm(id, btn.dataset.phone);
     } else if (act === "run") {
-      openRunSelect(id);
+      openRunSelect(id, btn.dataset.phone);
+    } else if (act === "toggle") {
+      const next = btn.dataset.enabled === "1" ? false : true;
+      await api(`/api/accounts/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: next }),
+      });
+      await loadAccounts();
     } else if (act === "view") {
       openViewModal(id, btn.dataset.phone);
     } else if (act === "edit") {
@@ -179,9 +208,10 @@ function openLoginConfirm(id, phone) {
 }
 $("#btn-confirm-login").addEventListener("click", async () => {
   const id = $("#login-account-id").value;
+  const phone = $("#login-phone").textContent || id;
   try {
     $("#modal-login").classList.add("hidden");
-    openRunModal(`账号 ${id} 登录中`, id);
+    openRunModal(`账号 ${phone} 登录中`, id);
     runningAccountId = Number(id);
     loadAccounts();
     await api(`/api/login/${id}`, { method: "POST" });
@@ -191,21 +221,33 @@ $("#btn-confirm-login").addEventListener("click", async () => {
 });
 
 // ---------- 执行任务多选 ----------
-function openRunSelect(id) {
+function openRunSelect(id, phone) {
   $("#run-account-id").value = id;
-  document.querySelectorAll(".run-task").forEach((c) => (c.checked = c.value === "checkin"));
+  $("#run-account-id").dataset.phone = phone || `#${id}`;
+  document
+    .querySelectorAll(".run-task")
+    .forEach((c) => (c.checked = c.value === "checkin"));
   $("#modal-run-select").classList.remove("hidden");
 }
 $("#btn-confirm-run").addEventListener("click", async () => {
   const id = $("#run-account-id").value;
-  const tasks = [...document.querySelectorAll(".run-task:checked")].map((c) => c.value);
-  if (tasks.length === 0) { alert("请至少选择一项任务"); return; }
+  const phone = $("#run-account-id").dataset.phone || id;
+  const tasks = [...document.querySelectorAll(".run-task:checked")].map(
+    (c) => c.value,
+  );
+  if (tasks.length === 0) {
+    alert("请至少选择一项任务");
+    return;
+  }
   try {
     $("#modal-run-select").classList.add("hidden");
-    openRunModal(`账号 ${id} 执行任务`, id);
+    openRunModal(`账号 ${phone} 执行任务`, id);
     runningAccountId = Number(id);
     loadAccounts();
-    await api(`/api/tasks/${id}/run`, { method: "POST", body: JSON.stringify({ tasks }) });
+    await api(`/api/tasks/${id}/run`, {
+      method: "POST",
+      body: JSON.stringify({ tasks }),
+    });
   } catch (err) {
     appendLog("", "启动失败：" + err.message, "error");
   }
@@ -221,7 +263,9 @@ $("#btn-confirm-delete").addEventListener("click", async () => {
   const id = $("#del-id").value;
   const delProfile = $("#del-profile").checked;
   try {
-    await api(`/api/accounts/${id}?delete_profile=${delProfile}`, { method: "DELETE" });
+    await api(`/api/accounts/${id}?delete_profile=${delProfile}`, {
+      method: "DELETE",
+    });
     $("#modal-delete").classList.add("hidden");
     await loadAccounts();
   } catch (err) {
@@ -230,9 +274,13 @@ $("#btn-confirm-delete").addEventListener("click", async () => {
 });
 
 // ---------- 弹窗通用 ----------
-document.querySelectorAll("[data-close]").forEach((b) =>
-  b.addEventListener("click", () => b.closest(".modal").classList.add("hidden"))
-);
+document
+  .querySelectorAll("[data-close]")
+  .forEach((b) =>
+    b.addEventListener("click", () =>
+      b.closest(".modal").classList.add("hidden"),
+    ),
+  );
 
 // ---------- 新增账号 ----------
 $("#btn-add").addEventListener("click", () => {
@@ -245,7 +293,10 @@ $("#btn-save-add").addEventListener("click", async () => {
   const phone = $("#in-phone").value.trim();
   const password = $("#in-password").value;
   const run_time = $("#in-runtime").value.trim() || null;
-  if (!phone || !password) { alert("请填写手机号和密码"); return; }
+  if (!phone || !password) {
+    alert("请填写手机号和密码");
+    return;
+  }
   try {
     const acc = await api("/api/accounts", {
       method: "POST",
@@ -282,7 +333,10 @@ $("#btn-save-edit").addEventListener("click", async () => {
   if (iv) payload.interval_days = parseInt(iv, 10);
   payload.enabled = $("#edit-enabled").checked;
   try {
-    await api(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+    await api(`/api/accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
     $("#modal-edit").classList.add("hidden");
     await loadAccounts();
   } catch (err) {
@@ -317,7 +371,10 @@ $("#btn-save-settings").addEventListener("click", async () => {
     custom_webhook_body: $("#set-webhook-body").value.trim(),
   };
   try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify({ values }) });
+    await api("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ values }),
+    });
     $("#modal-settings").classList.add("hidden");
     await refreshGlobalSendTime();
     await loadAccounts();
@@ -326,12 +383,17 @@ $("#btn-save-settings").addEventListener("click", async () => {
   }
 });
 
-$("#btn-clear-log").addEventListener("click", () => { $("#log-box").innerHTML = ""; });
+$("#btn-clear-log").addEventListener("click", () => {
+  $("#log-box").innerHTML = "";
+});
 
 // ---------- 强制停止 ----------
 $("#btn-force-stop").addEventListener("click", () => {
   const id = $("#run-modal-account").value;
-  if (!id) { alert("当前无可停止的任务"); return; }
+  if (!id) {
+    alert("当前无可停止的任务");
+    return;
+  }
   $("#stop-account-id").value = id;
   $("#modal-stop").classList.remove("hidden");
 });

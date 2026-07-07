@@ -5,6 +5,7 @@ from __future__ import annotations
 # ---- URL ----
 LOGIN_URL = "https://music.163.com/#/login?targetUrl=https%3A%2F%2Fmusic.163.com%2Fst%2Fmusician"
 MUSICIAN_HOME_URL = "https://music.163.com/musician/artist/home"
+DAILY_HOME_URL = "https://music.163.com/#/"
 FRIEND_URL = "https://music.163.com/#/friend"
 VIP_RIGHT_URL = "https://y.music.163.com/g/yida/7d4d0e9f89884a68b8eddea50b5aa6a6"
 
@@ -54,6 +55,10 @@ SEL_VIP_CHECK = "span.check"
 # ---- 常量 ----
 NETWORK_SECURITY_RISK_TEXT = "您当前的网络环境存在安全风险"
 VIP_TASK_NAME = "即日起30天内发布图文笔记天数≥4"
+
+# ---- 日常签到（首页侧边栏）----
+# 稳定属性选择器，不依赖「签 到 / 已签到」等会变的文案。
+SEL_DAILY_SIGN_BTN = "a[data-action='checkin']"
 
 # ---- 反检测 init script ----
 STEALTH_SCRIPT = """

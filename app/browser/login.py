@@ -362,9 +362,16 @@ def _fetch_user_info(page: Page, account_id: Optional[int]) -> tuple[Optional[st
     走浏览器 fetch（携带 cookie、同源），规避 requests 通道风控。
     """
     try:
+        # fetch 用相对路径需要页面已在 music.163.com 源上；复用会话时页面可能仍停在
+        # about:blank，导致「Failed to parse URL」。先确保导航到目标源。
+        try:
+            if "music.163.com" not in (page.url or ""):
+                page.goto(S.MUSICIAN_HOME_URL, wait_until="domcontentloaded")
+        except Exception:
+            pass
         result = page.evaluate(
             """async () => {
-                const r = await fetch('/api/nuser/account/get', {
+                const r = await fetch('https://music.163.com/api/nuser/account/get', {
                     method: 'GET', credentials: 'include'
                 });
                 return await r.json();

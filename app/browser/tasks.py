@@ -192,25 +192,56 @@ def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dic
 
 
 def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
-    """日常签到：同源 fetch 调用 dailyTask（网页端 type=1）。"""
+    """日常签到：打开首页，点击侧边栏签到按钮（data-action='checkin'），监听 dailyTask 确认。"""
     def _is_daily(resp) -> bool:
         try:
             return S.DAILY_TASK_API in resp.url and resp.request.method == "POST"
         except Exception:
             return False
 
+    _emit(account_id, "打开首页，准备日常签到...")
     try:
-        with page.expect_response(_is_daily, timeout=6000) as resp_info:
-            page.evaluate(
-                """() => {
-                    // 触发页面自身可能的每日任务上报；若无则忽略
-                    if (window.__daily_signin__) { window.__daily_signin__(); }
-                }"""
-            )
+        page.goto(S.DAILY_HOME_URL, wait_until="domcontentloaded")
+    except Exception as e:  # noqa: BLE001
+        _emit(account_id, f"打开首页失败：{e}", "warn")
+        return
+
+    # 等待侧边栏签到按钮出现（按稳定属性定位，不依赖文案）
+    btn_loc = None
+    deadline = time.time() + 10
+    while time.time() < deadline and btn_loc is None:
+        for scope in scopes(page):
+            try:
+                loc = scope.locator(S.SEL_DAILY_SIGN_BTN)
+                if loc.count() > 0:
+                    btn_loc = loc.first
+                    break
+            except Exception:
+                continue
+        if btn_loc is None:
+            page.wait_for_timeout(300)
+
+    if btn_loc is None:
+        _emit(account_id, "日常签到：未找到签到按钮（可能未登录或页面结构变化）", "warn")
+        return
+
+    # 判断是否已签到：data-action='checkin' 存在即视为可签，点击并监听接口确认。
+    try:
+        with page.expect_response(_is_daily, timeout=8000) as resp_info:
+            try:
+                btn_loc.click(force=True)
+            except Exception:
+                btn_loc.evaluate("el => el.click()")
         data = resp_info.value.json()
-        _emit(account_id, f"日常签到结果：{str(data)[:100]}")
+        code = data.get("code") if isinstance(data, dict) else None
+        if code == 200:
+            _emit(account_id, "日常签到成功")
+        elif code == -2:
+            _emit(account_id, "日常签到：今日已签到")
+        else:
+            _emit(account_id, f"日常签到返回：{str(data)[:100]}", "warn")
     except Exception:
-        _emit(account_id, "日常签到：页面未触发 dailyTask 接口（可忽略或已完成）")
+        _emit(account_id, "日常签到：点击后未捕获 dailyTask 接口（可能已完成）")
 
 
 # ---------- 发布动态（页面级）----------

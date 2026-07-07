@@ -3,6 +3,8 @@
 > **v2 · 完全浏览器自动化**
 > 彻底放弃 API 加密请求模式，所有登录与任务（签到、发布动态、VIP 领取）全部通过 Playwright 浏览器同源操作完成，从根本上规避 `301 用户未登陆` 等风控问题。新增 Web 管理界面，可视化登录、账号增删改、按账号定时执行，数据存 SQLite。
 
+👉 **想快速了解能做什么？请查看功能预览：[`docs/PREVIEW.md`](./docs/PREVIEW.md)**
+
 ## 相比 1.x 的变化
 
 | | 1.x（旧版） | 2.0（本版） |
@@ -25,6 +27,20 @@ docker compose up -d --build
 然后浏览器打开 `http://localhost:8000`。容器内默认无头运行浏览器。
 
 `docker-compose.yml` 已把 `./app/data` 挂载出来持久化（SQLite + 浏览器 profile + 日志）。
+
+也可以直接拉取已构建好的镜像运行（支持 `amd64` / `arm64`）：
+
+```bash
+# 1. 拉取镜像（支持 amd64 和 arm64 架构）
+docker pull xinghehy/netease-musician-task:latest
+
+# 2. 运行容器（数据持久化到 ./app/data）
+docker run -d --name netease-musician-task \
+  -p 8000:8000 \
+  -v "$(pwd)/app/data:/app/app/data" \
+  --restart always \
+  xinghehy/netease-musician-task:latest
+```
 
 ### 本地运行
 
@@ -103,6 +119,9 @@ app/
 - 登录调试：[`docs/DEBUG_DOCS.md`](./docs/DEBUG_DOCS.md)
 
 ## 更新日志
+
+### v2.0.2
+- 更新日常签到逻辑和用户信息获取方式
 
 ### v2.0.1
 - 完全浏览器自动化重构：签到 / 发布动态 / VIP 领取全部走浏览器同源操作，彻底解决 `301 用户未登陆` 风控
