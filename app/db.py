@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS task_logs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id  INTEGER,
-    task_type   TEXT,       -- login / checkin / daily / publish / vip
+    task_type   TEXT,       -- login / musician_checkin / daily_checkin / daily / publish / vip
     status      TEXT,       -- success / fail / info
     message     TEXT,
     created_at  TEXT DEFAULT (datetime('now','localtime'))

@@ -22,11 +22,13 @@ from app.browser.helpers import (
     click_first,
     cookies_to_str,
     fill_first,
+    fetch_session_user,
     has_login_cookie,
     scopes,
     try_click_if_visible,
 )
 from app.browser.manager import run_with_context
+from app.account_identity import account_label, mask_phone
 from app.config import DEBUG_DIR, DEBUG_SCREENSHOT
 from app.event_bus import bus
 from app.logging_conf import logger
@@ -59,7 +61,8 @@ def _debug_shot(page: Page | Frame, phone: str, tag: str, account_id: Optional[i
         safe_tag = re.sub(r"[^\w\-.]+", "_", tag).strip("_")[:60] or "shot"
         path = os.path.join(out_dir, f"{time.strftime('%Y%m%d_%H%M%S')}_{safe_tag}.png")
         pw_page.screenshot(path=path, full_page=True)
-        _emit(account_id, f"[调试] 已保存截图：{path}", "warn")
+        display_path = os.path.join(DEBUG_DIR, mask_phone(phone), os.path.basename(path))
+        _emit(account_id, f"[调试] 已保存截图：{display_path}", "warn")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[调试] 截图失败：{e}")
 
@@ -323,11 +326,12 @@ def _notify_qr(account_id: Optional[int], qr_url: str) -> None:
     try:
         from app.notify import send_configured_notification
 
+        identity = account_label(account_id)
         send_configured_notification(
-            f"账号(id={account_id}) 触发登录扫码验证，请尽快扫码：\n{qr_url}",
+            f"账号 {identity} 触发登录扫码验证，请尽快扫码：\n{qr_url}",
             title="网易音乐人登录扫码验证",
             event="login_qr",
-            extra={"account_id": account_id, "qr_url": qr_url},
+            extra={"account": identity, "qr_url": qr_url},
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[二次验证] 扫码通知发送失败：{e}")
@@ -361,41 +365,12 @@ def _fetch_user_info(page: Page, account_id: Optional[int]) -> tuple[Optional[st
     登录成功后在页面同源上下文请求账号信息，拿 uid 和昵称。
     走浏览器 fetch（携带 cookie、同源），规避 requests 通道风控。
     """
-    try:
-        # fetch 用相对路径需要页面已在 music.163.com 源上；复用会话时页面可能仍停在
-        # about:blank，导致「Failed to parse URL」。先确保导航到目标源。
-        try:
-            if "music.163.com" not in (page.url or ""):
-                page.goto(S.MUSICIAN_HOME_URL, wait_until="domcontentloaded")
-        except Exception:
-            pass
-        result = page.evaluate(
-            """async () => {
-                const r = await fetch('https://music.163.com/api/nuser/account/get', {
-                    method: 'GET', credentials: 'include'
-                });
-                return await r.json();
-            }"""
-        )
-        uid = None
-        nickname = None
-        if isinstance(result, dict):
-            profile = result.get("profile") or {}
-            account = result.get("account") or {}
-            if isinstance(profile, dict):
-                uid = profile.get("userId")
-                nickname = profile.get("nickname")
-            if uid is None and isinstance(account, dict):
-                uid = account.get("id")
-        if uid is not None:
-            uid = str(uid)
-            _emit(account_id, f"已获取账号信息：uid={uid}，昵称={nickname or '-'}")
-        else:
-            _emit(account_id, "未能解析到 uid（账号信息接口返回异常）", "warn")
-        return uid, nickname
-    except Exception as e:  # noqa: BLE001
-        _emit(account_id, f"获取账号信息失败：{e}", "warn")
-        return None, None
+    uid, nickname, error = fetch_session_user(page, S.MUSICIAN_HOME_URL)
+    if uid:
+        _emit(account_id, f"已获取账号信息：uid={uid}，昵称={nickname or '-'}")
+    else:
+        _emit(account_id, f"服务端登录态校验失败：{error or '未能解析 uid'}", "warn")
+    return uid, nickname
 
 
 # ---------- 主流程 ----------
@@ -405,18 +380,21 @@ def login_account(profile_dir: str, phone: str, password: str, account_id: Optio
     必须在 browser worker 线程内调用。
     """
     bus.status(account_id, "logging_in", "开始登录")
-    _emit(account_id, f"使用 Playwright 打开登录页，账号：{phone}")
+    _emit(account_id, f"使用 Playwright 打开登录页，账号：{account_label(account_id, phone=phone)}")
 
     with run_with_context(profile_dir, account_id=account_id, label="登录") as (context, page):
         # 先看持久化 profile 是否已是登录态
         try:
             existing = context.cookies("https://music.163.com")
             if has_login_cookie(existing):
-                _emit(account_id, "检测到持久化 profile 已是登录态，跳过密码登录")
-                cookie_str = cookies_to_str(existing)
+                _emit(account_id, "检测到持久化 profile 含登录 cookie，正在向服务端校验...")
                 uid, nickname = _fetch_user_info(page, account_id)
-                bus.status(account_id, "login_ok", "已登录（复用会话）")
-                return {"ok": True, "cookie_str": cookie_str, "uid": uid, "nickname": nickname, "message": "reuse session"}
+                if uid:
+                    cookie_str = cookies_to_str(existing)
+                    _emit(account_id, "服务端确认会话有效，跳过密码登录")
+                    bus.status(account_id, "login_ok", "已登录（复用会话）")
+                    return {"ok": True, "cookie_str": cookie_str, "uid": uid, "nickname": nickname, "message": "reuse session"}
+                _emit(account_id, "持久化 cookie 已被服务端判定失效，继续执行密码登录", "warn")
         except Exception:
             pass
 
@@ -485,24 +463,27 @@ def login_account(profile_dir: str, phone: str, password: str, account_id: Optio
         except Exception as e:  # noqa: BLE001
             _emit(account_id, f"检查二次验证出错：{e}", "warn")
 
-        # 等待登录 cookie
+        # 等待服务端确认登录成功。旧 cookie 可能仍存在，不能只检查 cookie 名称。
         cookie_str, ok = "", False
+        uid, nickname = None, None
         deadline = time.time() + 60
         while time.time() < deadline:
             cookies = context.cookies("https://music.163.com")
             cookie_str = cookies_to_str(cookies)
             if has_login_cookie(cookies):
-                ok = True
-                break
+                uid, nickname, _error = fetch_session_user(page, S.MUSICIAN_HOME_URL)
+                if uid:
+                    ok = True
+                    break
             time.sleep(1)
 
         if ok:
-            _emit(account_id, "登录成功，已获取有效 Cookie")
-            uid, nickname = _fetch_user_info(page, account_id)
+            _emit(account_id, f"已获取账号信息：uid={uid}，昵称={nickname or '-'}")
+            _emit(account_id, "登录成功，服务端已确认 Cookie 有效")
             bus.status(account_id, "login_ok", "登录成功")
             return {"ok": True, "cookie_str": cookie_str, "uid": uid, "nickname": nickname, "message": "ok"}
 
-        _emit(account_id, "登录未获取到有效 Cookie", "error")
+        _emit(account_id, "登录未通过服务端会话校验（Cookie 缺失或已失效）", "error")
         _debug_shot(page, phone, "no_login_cookie", account_id)
-        bus.status(account_id, "login_fail", "未获取到有效 Cookie")
-        return {"ok": False, "cookie_str": cookie_str, "message": "no login cookie"}
+        bus.status(account_id, "login_fail", "Cookie 未通过服务端校验")
+        return {"ok": False, "cookie_str": cookie_str, "message": "server session invalid"}

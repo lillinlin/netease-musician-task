@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import repository as repo
 from app.logging_conf import logger
+from app.account_identity import account_label
 from app.runner import run_daily_for_account
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -47,7 +48,7 @@ def reschedule_all() -> None:
             replace_existing=True,
             misfire_grace_time=3600,
         )
-        logger.info(f"已排程账号 {acc['phone']} 每日任务：{run_time}")
+        logger.info(f"已排程账号 {account_label(acc['id'], account=acc)} 每日任务：{run_time}")
 
 
 def start() -> None:

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app import repository as repo
 from app.logging_conf import logger
+from app.account_identity import account_label
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -87,7 +88,7 @@ def delete_account(account_id: int, delete_profile: bool = False) -> dict:
         try:
             shutil.rmtree(profile_dir, ignore_errors=True)
             removed = True
-            logger.info(f"已删除浏览器 profile 目录：{profile_dir}")
+            logger.info(f"已删除账号 {account_label(account_id, account=acc)} 的浏览器 profile 目录")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"删除 profile 目录失败：{e}")
     _reschedule()

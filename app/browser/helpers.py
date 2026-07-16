@@ -8,6 +8,9 @@ from typing import Optional
 from playwright.sync_api import Frame, Page
 
 
+ACCOUNT_INFO_URL = "https://music.163.com/api/nuser/account/get"
+
+
 def scopes(page: Page | Frame):
     """遍历 main frame + 所有子 frame，处理弹窗在不同 frame 的情况。"""
     yield page
@@ -119,8 +122,42 @@ def cookies_to_str(cookies: list[dict]) -> str:
 
 
 def has_login_cookie(cookies: list[dict]) -> bool:
-    """MUSIC_U 或 __csrf 任一存在即认为已登录。"""
+    """仅判断本地是否留有登录 cookie；不能证明服务端会话仍有效。"""
     for c in cookies:
         if c.get("name") in ("MUSIC_U", "__csrf") and c.get("value"):
             return True
     return False
+
+
+def fetch_session_user(page: Page, home_url: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """通过服务端账号接口验证会话，返回 (uid, nickname, error)。"""
+    try:
+        if "music.163.com" not in (page.url or ""):
+            page.goto(home_url, wait_until="domcontentloaded")
+        result = page.evaluate(
+            f"""async () => {{
+                const r = await fetch({ACCOUNT_INFO_URL!r}, {{
+                    method: 'GET', credentials: 'include', cache: 'no-store'
+                }});
+                if (!r.ok) return {{__http_status: r.status}};
+                return await r.json();
+            }}"""
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, None, str(exc)
+
+    if not isinstance(result, dict):
+        return None, None, "账号信息接口返回非 JSON 对象"
+    if result.get("__http_status"):
+        return None, None, f"账号信息接口 HTTP {result['__http_status']}"
+
+    profile = result.get("profile") or {}
+    account = result.get("account") or {}
+    uid = profile.get("userId") if isinstance(profile, dict) else None
+    nickname = profile.get("nickname") if isinstance(profile, dict) else None
+    if uid is None and isinstance(account, dict):
+        uid = account.get("id")
+    if uid is None:
+        code = result.get("code")
+        return None, None, f"账号信息接口未返回 uid（code={code!r}）"
+    return str(uid), nickname, None

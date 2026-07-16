@@ -18,7 +18,7 @@ from typing import Any, Optional
 from playwright.sync_api import Page
 
 from app.browser import selectors as S
-from app.browser.helpers import cookies_to_str, first_with_selector, scopes
+from app.browser.helpers import cookies_to_str, fetch_session_user, first_with_selector, scopes
 from app.browser.manager import run_with_context
 from app.event_bus import bus
 from app.logging_conf import logger
@@ -32,6 +32,18 @@ def _emit(account_id: Optional[int], line: str, level: str = "info") -> None:
     else:
         logger.info(line)
     bus.log(account_id, line, level=level)
+
+
+def _validate_session(page: Page, account_id: Optional[int]) -> bool:
+    """任务执行前向服务端确认登录态，避免仅凭本地 cookie 静默运行。"""
+    _emit(account_id, "执行任务前校验服务端登录态...")
+    uid, _nickname, error = fetch_session_user(page, S.MUSICIAN_HOME_URL)
+    if uid:
+        _emit(account_id, f"服务端登录态有效（uid={uid}）")
+        return True
+    _emit(account_id, f"Cookie 已失效或账号未登录：{error or '账号接口未返回 uid'}；请点击「登录」重新认证", "error")
+    bus.status(account_id, "login_fail", "Cookie 已失效，请重新登录")
+    return False
 
 
 # ---------- 循环任务列表 ----------
@@ -61,28 +73,63 @@ def _capture_cycle_missions(page: Page, account_id: Optional[int], timeout_ms: i
 
 
 # ---------- 签到（页面级）----------
+def _musician_signed_result(page: Page, account_id: Optional[int]) -> Optional[dict]:
+    """识别音乐人中心已签到按钮状态。"""
+    signed_selectors = [
+        ".sign-in-btn.signed",
+        "div[class~='sign-in-btn'][class~='signed']",
+        "text=已签到, 明日继续",
+        "text=已签到，明日继续",
+    ]
+    for scope in scopes(page):
+        for sel in signed_selectors:
+            try:
+                loc = scope.locator(sel)
+                if loc.count() > 0 and loc.first.is_visible():
+                    text = (loc.first.inner_text(timeout=1000) or "已签到").strip()
+                    _emit(account_id, f"音乐人签到：{text}")
+                    return {"ok": True, "message": "今日已签到"}
+            except Exception:
+                continue
+    return None
+
+
 def _checkin_on_page(page: Page, account_id: Optional[int]) -> dict:
     """在已有页面上执行音乐人签到 + 日常签到。"""
     missions = _capture_cycle_missions(page, account_id)
-    checkin_done = False
-    for m in missions:
-        desc = m.get("description") or ""
-        if "签到" not in desc:
-            continue
-        _emit(account_id, f"发现签到任务：{desc}")
-        ok = _click_or_invoke_checkin(page, account_id, m)
-        checkin_done = checkin_done or ok
-    if not checkin_done:
-        _emit(account_id, "未发现可执行的签到任务（可能已签到）")
-    _do_daily_task(page, account_id)
-    return {"ok": checkin_done, "message": "checkin done"}
+    musician_result = _musician_signed_result(page, account_id)
+    if musician_result is None:
+        musician_result = {"ok": False, "message": "未发现可执行任务（可能已签到）"}
+        for m in missions:
+            desc = m.get("description") or ""
+            if "签到" not in desc:
+                continue
+            _emit(account_id, f"发现签到任务：{desc}")
+            current = _click_or_invoke_checkin(page, account_id, m)
+            if current["ok"]:
+                musician_result = current
+                break
+            musician_result = current
+    if not musician_result["ok"]:
+        _emit(account_id, musician_result["message"])
+    daily_result = _do_daily_task(page, account_id)
+    return {
+        # 保留顶层字段兼容旧调用方；详细展示必须读取下面两个独立结果。
+        "ok": bool(musician_result["ok"] and daily_result["ok"]),
+        "message": "checkin done",
+        "musician_checkin": musician_result,
+        "daily_checkin": daily_result,
+    }
 
 
 def do_checkin(profile_dir: str, account_id: Optional[int] = None) -> dict:
     """独立入口：自己开浏览器执行签到（供手动单独触发）。"""
     bus.status(account_id, "running", "执行签到任务")
     with run_with_context(profile_dir, account_id=account_id, label="签到") as (context, page):
+        if not _validate_session(page, account_id):
+            return {"ok": False, "auth_valid": False, "cookie_str": "", "message": "cookie expired"}
         res = _checkin_on_page(page, account_id)
+        res["auth_valid"] = True
         res["cookie_str"] = cookies_to_str(context.cookies("https://music.163.com"))
         bus.status(account_id, "done", "签到任务完成")
         return res
@@ -110,6 +157,10 @@ def do_daily_run(
     result: dict[str, Any] = {"checkin": None, "interval": None}
 
     with run_with_context(profile_dir, account_id=account_id, label="每日任务") as (context, page):
+        if not _validate_session(page, account_id):
+            result.update({"ok": False, "auth_valid": False, "message": "cookie expired", "cookie_str": ""})
+            return result
+        result["auth_valid"] = True
         # 1) 签到（主标签页）
         if run_checkin:
             result["checkin"] = _checkin_on_page(page, account_id)
@@ -139,7 +190,7 @@ def do_daily_run(
     return result
 
 
-def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dict) -> bool:
+def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dict) -> dict:
     """
     优先在页面同源上下文调用签到接口（走页面自带的加密请求管线），
     监听 reward/obtain 响应确认。DOM 按钮点击作为候选路径。
@@ -152,6 +203,12 @@ def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dic
 
     user_mission_id = mission.get("userMissionId")
     period = mission.get("period")
+
+    # 已签到时按钮不会消失，而是变成：
+    # <div class="sign-in-btn signed">已签到, 明日继续</div>
+    signed_result = _musician_signed_result(page, account_id)
+    if signed_result is not None:
+        return signed_result
 
     # 路径 A：DOM 点击签到按钮（候选选择器；确切选择器建议有头浏览器现场核对）
     checkin_selectors = [
@@ -174,7 +231,7 @@ def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dic
                     data = resp_info.value.json()
                     if isinstance(data, dict) and data.get("code") == 200:
                         _emit(account_id, "签到成功（DOM 点击）")
-                        return True
+                        return {"ok": True, "message": "签到成功"}
                     _emit(account_id, f"签到接口返回：{str(data)[:120]}", "warn")
                 except Exception:
                     # 点击了但没监听到接口，继续尝试其他选择器
@@ -188,10 +245,10 @@ def _click_or_invoke_checkin(page: Page, account_id: Optional[int], mission: dic
         "该账号页面签到按钮选择器可能需现场核对",
         "warn",
     )
-    return False
+    return {"ok": False, "message": "未能完成签到，页面按钮结构可能已变化"}
 
 
-def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
+def _do_daily_task(page: Page, account_id: Optional[int]) -> dict:
     """日常签到：打开首页，点击侧边栏签到按钮（data-action='checkin'），监听 dailyTask 确认。"""
     def _is_daily(resp) -> bool:
         try:
@@ -204,7 +261,7 @@ def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
         page.goto(S.DAILY_HOME_URL, wait_until="domcontentloaded")
     except Exception as e:  # noqa: BLE001
         _emit(account_id, f"打开首页失败：{e}", "warn")
-        return
+        return {"ok": False, "message": f"打开首页失败：{e}"}
 
     # 等待侧边栏签到按钮出现（按稳定属性定位，不依赖文案）
     btn_loc = None
@@ -233,9 +290,10 @@ def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
                 continue
         if already_signed:
             _emit(account_id, "日常签到：今日已签到")
+            return {"ok": True, "message": "今日已签到"}
         else:
             _emit(account_id, "日常签到：未找到签到按钮（可能未登录或页面结构变化）", "warn")
-        return
+            return {"ok": False, "message": "未找到签到按钮（可能未登录或页面结构变化）"}
 
     # 判断是否已签到：data-action='checkin' 存在即视为可签，点击并监听接口确认。
     try:
@@ -248,12 +306,16 @@ def _do_daily_task(page: Page, account_id: Optional[int]) -> None:
         code = data.get("code") if isinstance(data, dict) else None
         if code == 200:
             _emit(account_id, "日常签到成功")
+            return {"ok": True, "message": "签到成功"}
         elif code == -2:
             _emit(account_id, "日常签到：今日已签到")
+            return {"ok": True, "message": "今日已签到"}
         else:
             _emit(account_id, f"日常签到返回：{str(data)[:100]}", "warn")
-    except Exception:
+            return {"ok": False, "message": f"接口返回异常：{str(data)[:100]}"}
+    except Exception as e:  # noqa: BLE001
         _emit(account_id, "日常签到：点击后未捕获 dailyTask 接口（可能已完成）")
+        return {"ok": False, "message": f"未捕获签到接口：{e}"}
 
 
 # ---------- 发布动态（页面级）----------

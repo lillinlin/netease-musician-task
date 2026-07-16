@@ -13,6 +13,7 @@ import threading
 from typing import Optional
 
 from app.event_bus import bus
+from app.account_identity import account_label
 from app.logging_conf import logger
 
 
@@ -67,7 +68,7 @@ def preempt_existing() -> None:
     if cur is None:
         return
 
-    tip = f"账号 {cur.account_id}" if cur.account_id is not None else "上一个任务"
+    tip = f"账号 {account_label(cur.account_id)}" if cur.account_id is not None else "上一个任务"
     msg = f"检测到已有浏览器正在运行（{tip}·{cur.label}），强制关闭以避免冲突"
     logger.warning(msg)
     bus.log(cur.account_id, msg, level="warn")
@@ -83,7 +84,7 @@ def register(pid: int, account_id: Optional[int], label: str = "") -> None:
     global _active
     with _lock:
         _active = _Active(pid, account_id, label)
-    logger.info(f"登记活跃浏览器 pid={pid} account={account_id} {label}")
+    logger.info(f"登记活跃浏览器 pid={pid} 账号={account_label(account_id)} {label}")
 
 
 def unregister(pid: int) -> None:
@@ -119,7 +120,7 @@ def force_stop(account_id: Optional[int] = None) -> bool:
     if account_id is not None and cur.account_id != account_id:
         return False
 
-    tip = f"账号 {cur.account_id}" if cur.account_id is not None else "任务"
+    tip = f"账号 {account_label(cur.account_id)}" if cur.account_id is not None else "任务"
     msg = f"手动强制停止（{tip}·{cur.label}）"
     logger.warning(msg)
     bus.log(cur.account_id, msg, level="warn")

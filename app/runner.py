@@ -13,6 +13,7 @@ from app.browser.manager import worker
 from app.event_bus import bus
 from app.logging_conf import logger
 from app.notify import send_configured_notification
+from app.account_identity import account_label
 from app import repository as repo
 
 
@@ -27,6 +28,17 @@ def _interval_days() -> int:
 
 def _max_monthly_sends() -> int:
     return repo.get_setting_int("max_monthly_sends", 4)
+
+
+def _record_auth_state(account_id: int, result: dict) -> bool:
+    """任务发现服务端会话失效时立即同步账号列表状态。"""
+    if result.get("auth_valid") is False:
+        repo.update_account(account_id, cookie_status="expired")
+        repo.add_log(account_id, "auth", "fail", "cookie expired; login required")
+        # 数据库落库后再广播一次，确保前端刷新时能读到 expired。
+        bus.status(account_id, "login_fail", "Cookie 已失效，请重新登录")
+        return False
+    return True
 
 
 # ---------- 登录 ----------
@@ -78,7 +90,11 @@ def run_checkin(account_id: int) -> dict:
         repo.add_log(account_id, "checkin", "fail", str(e))
         return {"ok": False, "message": str(e)}
 
-    repo.add_log(account_id, "checkin", "success" if res.get("ok") else "info", res.get("message", ""))
+    _record_auth_state(account_id, res)
+    musician = res.get("musician_checkin") or {}
+    daily = res.get("daily_checkin") or {}
+    repo.add_log(account_id, "musician_checkin", "success" if musician.get("ok") else "info", musician.get("message", ""))
+    repo.add_log(account_id, "daily_checkin", "success" if daily.get("ok") else "fail", daily.get("message", ""))
     return res
 
 
@@ -171,6 +187,29 @@ def _emit_run(account_id: int, line: str) -> None:
     bus.log(account_id, line)
 
 
+def _notify_manual_result(account_id: int, acc: dict, tasks: list[str], lines: list[str], *, ok: bool) -> None:
+    """发送网页手动执行结果；通知失败不影响任务本身。"""
+    task_names = {"checkin": "签到", "publish": "发布动态", "vip": "领取 VIP"}
+    selected = "、".join(task_names[t] for t in tasks if t in task_names)
+    account_name = account_label(account_id, account=acc)
+    content = "\n".join([
+        f"账号：{account_name}",
+        f"手动任务：{selected or '-'}",
+        *lines,
+    ])
+    try:
+        sent = send_configured_notification(
+            content,
+            title="网易音乐人手动任务",
+            event="manual_result",
+            extra={"account": account_name, "tasks": tasks, "ok": ok},
+        )
+        if not sent:
+            _emit_run(account_id, "手动任务结果通知未发送（未配置通知渠道或发送失败）")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"手动任务结果通知失败：{e}")
+
+
 # ---------- 手动多选执行（网页「执行」弹窗）----------
 def run_selected(account_id: int, tasks: list[str]) -> None:
     """
@@ -181,6 +220,8 @@ def run_selected(account_id: int, tasks: list[str]) -> None:
     acc = repo.get_account(account_id)
     if not acc:
         return
+
+    _emit_run(account_id, f"手动执行已选择任务：{', '.join(tasks)}")
 
     want_checkin = "checkin" in tasks
     want_vip = "vip" in tasks
@@ -209,11 +250,26 @@ def run_selected(account_id: int, tasks: list[str]) -> None:
     except Exception as e:  # noqa: BLE001
         logger.exception("手动执行任务异常")
         repo.add_log(account_id, "manual", "fail", str(e))
+        _notify_manual_result(account_id, acc, tasks, [f"执行失败：{e}"], ok=False)
         return
 
+    if not _record_auth_state(account_id, res):
+        _notify_manual_result(account_id, acc, tasks, ["执行失败：Cookie 已失效，请重新登录"], ok=False)
+        return
+
+    result_lines: list[str] = []
+    all_ok = True
     checkin = res.get("checkin")
     if want_checkin and checkin is not None:
-        repo.add_log(account_id, "checkin", "success" if checkin.get("ok") else "info", checkin.get("message", ""))
+        musician = checkin.get("musician_checkin") or {}
+        daily = checkin.get("daily_checkin") or {}
+        repo.add_log(account_id, "musician_checkin", "success" if musician.get("ok") else "info", musician.get("message", ""))
+        repo.add_log(account_id, "daily_checkin", "success" if daily.get("ok") else "fail", daily.get("message", ""))
+        musician_ok = bool(musician.get("ok"))
+        daily_ok = bool(daily.get("ok"))
+        all_ok = all_ok and musician_ok and daily_ok
+        result_lines.append(f"音乐人签到：{musician.get('message') or ('成功' if musician_ok else '未完成')}")
+        result_lines.append(f"日常签到：{daily.get('message') or ('成功' if daily_ok else '未完成')}")
 
     interval = res.get("interval")
     if run_interval and interval is not None:
@@ -221,6 +277,9 @@ def run_selected(account_id: int, tasks: list[str]) -> None:
             if interval.get("further_vip_get_time"):
                 repo.update_account(account_id, further_vip_get_time=interval["further_vip_get_time"])
             repo.add_log(account_id, "vip", "success" if interval.get("ok") else "info", interval.get("message", ""))
+            interval_ok = bool(interval.get("ok"))
+            all_ok = all_ok and interval_ok
+            result_lines.append(f"VIP 领取：{'成功' if interval_ok else interval.get('message', '未完成')}")
         else:
             if interval.get("ok"):
                 repo.update_account(
@@ -230,6 +289,19 @@ def run_selected(account_id: int, tasks: list[str]) -> None:
                     last_send_date=_today(),
                 )
             repo.add_log(account_id, "publish", "success" if interval.get("ok") else "fail", interval.get("message", ""))
+            interval_ok = bool(interval.get("ok"))
+            all_ok = all_ok and interval_ok
+            result_lines.append(f"发布动态：{'成功' if interval_ok else interval.get('message', '失败')}")
+
+    if want_checkin and checkin is None:
+        all_ok = False
+        result_lines.append("音乐人签到：未返回执行结果")
+        result_lines.append("日常签到：未返回执行结果")
+    if run_interval and interval is None:
+        all_ok = False
+        result_lines.append(f"{'VIP 领取' if interval_kind == 'vip' else '发布动态'}：未返回执行结果")
+
+    _notify_manual_result(account_id, acc, tasks, result_lines, ok=all_ok)
 
 
 # ---------- 完整每日流程（供调度器调用）----------
@@ -264,14 +336,21 @@ def run_daily_for_account(account_id: int) -> None:
         repo.add_log(account_id, "daily", "fail", str(e))
         return
 
-    # 记录签到结果
+    if not _record_auth_state(account_id, res):
+        return
+
+    # 分别记录音乐人签到和日常签到结果
     checkin = res.get("checkin") or {}
-    repo.add_log(account_id, "checkin", "success" if checkin.get("ok") else "info", checkin.get("message", ""))
+    musician = checkin.get("musician_checkin") or {}
+    daily = checkin.get("daily_checkin") or {}
+    repo.add_log(account_id, "musician_checkin", "success" if musician.get("ok") else "info", musician.get("message", ""))
+    repo.add_log(account_id, "daily_checkin", "success" if daily.get("ok") else "fail", daily.get("message", ""))
 
     # 记录并落库间隔任务结果
     interval = res.get("interval")
-    lines = [f"账号 {acc.get('nickname') or acc['phone']}："]
-    lines.append(f"签到：{'成功' if checkin.get('ok') else checkin.get('message', '无签到任务')}")
+    lines = [f"账号 {account_label(account_id, account=acc)}："]
+    lines.append(f"音乐人签到：{musician.get('message') or ('成功' if musician.get('ok') else '无签到任务')}")
+    lines.append(f"日常签到：{daily.get('message') or ('成功' if daily.get('ok') else '未完成')}")
 
     if decision["run"] and interval is not None:
         if decision["kind"] == "vip":

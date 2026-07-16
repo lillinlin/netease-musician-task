@@ -13,6 +13,7 @@ from app.logging_conf import logger
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 _VALID_TASKS = {"checkin", "publish", "vip"}
+_TASK_ALIASES = {"publishing": "publish"}  # 兼容修复前的网页缓存
 
 
 class RunSelection(BaseModel):
@@ -23,7 +24,9 @@ class RunSelection(BaseModel):
 def run_selected(account_id: int, body: RunSelection) -> dict:
     if not repo.get_account(account_id):
         raise HTTPException(404, "账号不存在")
-    tasks = [t for t in body.tasks if t in _VALID_TASKS]
+    normalized = [_TASK_ALIASES.get(t, t) for t in body.tasks]
+    # 去重并保持用户勾选顺序。
+    tasks = list(dict.fromkeys(t for t in normalized if t in _VALID_TASKS))
     if not tasks:
         raise HTTPException(400, "请至少选择一项任务")
 
