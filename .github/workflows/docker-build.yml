@@ -1,15 +1,25 @@
 name: Build and Push to Docker Hub
 
+# 两种触发方式：推送master分支 / 手动运行
 on:
   push:
-    branches: [ master ]
+    branches: [master]
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
+      - "**.md"
+      - "docs/**"
+      - ".github/**" # 新增：忽略工作流配置文件修改
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "手动指定镜像版本，格式 vx.x.x（如 v2.0.4）"
+        required: true
+        default: "v1.0.0"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 自动push场景：提交信息以v开头才执行；手动触发无条件执行
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'v') }}
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
@@ -19,7 +29,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       # 设置 Docker Buildx（支持多架构）
-      - name: 设置 Docker Buildx
+      - name: 设置 Docker Buildx-action@v3
         uses: docker/setup-buildx-action@v3
 
       # 登录阿里云 ACR
@@ -37,10 +47,27 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      # 生成 年月日-时分秒 版本号
-      - name: 生成版本标签
+      # 解析最终版本tag：手动输入优先，否则从commit message提取
+      - name: 解析版本标签tag
         id: vars
-        run: echo "tag=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # 手动运行，取输入框版本
+            tag="${{ github.event.inputs.version_tag }}"
+          else
+            # push自动触发，解析commit第一行第一个字段
+            commit_msg="${{ github.event.head_commit.message }}"
+            tag=$(echo "$commit_msg" | head -n1 | awk '{print $1}')
+          fi
+
+          # 校验版本格式必须 v数字.数字.数字
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本格式非法：$tag，必须为 vX.X.X 格式"
+            exit 1
+          fi
+
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "最终使用镜像版本: $tag"
 
       # 构建多架构镜像 + 同时推送到两个平台
       - name: 构建并推送多架构镜像
