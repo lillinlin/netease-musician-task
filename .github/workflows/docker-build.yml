@@ -50,14 +50,18 @@ jobs:
       # 解析最终版本tag：手动输入优先，否则从commit message提取
       - name: 解析版本标签tag
         id: vars
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION_TAG: ${{ github.event.inputs.version_tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             # 手动运行，取输入框版本
-            tag="${{ github.event.inputs.version_tag }}"
+            tag="$INPUT_VERSION_TAG"
           else
             # push自动触发，解析commit第一行第一个字段
-            commit_msg="${{ github.event.head_commit.message }}"
-            tag=$(echo "$commit_msg" | head -n1 | awk '{print $1}')
+            first_line="${COMMIT_MESSAGE%%$'\n'*}"
+            tag="${first_line%%[[:space:]]*}"
           fi
 
           # 校验版本格式必须 v数字.数字.数字
@@ -66,7 +70,7 @@ jobs:
             exit 1
           fi
 
-          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "最终使用镜像版本: $tag"
 
       # 构建多架构镜像 + 同时推送到两个平台
