@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>管理端登录</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-card">
+      <div class="brand auth-brand">
+        <span class="logo">♪</span>
+        <h1>音乐人任务管理</h1>
+      </div>
+      <section id="login-panel">
+        <h2>管理端登录</h2>
+        <p class="hint-text">请输入管理密码后继续</p>
+        <label
+          >管理密码<input
+            id="auth-password"
+            type="password"
+            autocomplete="current-password"
+            autofocus
+        /></label>
+        <button class="btn btn-primary auth-submit" id="auth-login">
+          登录
+        </button>
+      </section>
+      <section id="change-panel" class="hidden">
+        <h2>必须修改默认密码</h2>
+        <p class="auth-warning">
+          当前仍在使用默认密码
+          123456。为保护您的账号安全，修改密码后才能进入管理端。
+        </p>
+        <label
+          >当前密码<input
+            id="current-password"
+            type="password"
+            autocomplete="current-password"
+        /></label>
+        <label
+          >新密码<input
+            id="new-password"
+            type="password"
+            autocomplete="new-password"
+        /></label>
+        <label
+          >确认新密码<input
+            id="confirm-password"
+            type="password"
+            autocomplete="new-password"
+        /></label>
+        <button class="btn btn-primary auth-submit" id="auth-change">
+          修改密码并进入
+        </button>
+      </section>
+      <p id="auth-error" class="auth-error"></p>
+    </main>
+    <script src="/static/auth.js"></script>
+  </body>
+</html>

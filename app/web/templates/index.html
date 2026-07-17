@@ -14,6 +14,7 @@
       </div>
       <div class="conn">
         <span id="ws-dot" class="dot"></span><span id="ws-text">连接中...</span>
+        <button class="btn btn-logout" id="btn-logout">退出</button>
       </div>
     </header>
 
@@ -108,6 +109,10 @@
         <label class="row"
           ><input id="set-headless" type="checkbox" /> 无头模式（服务器）</label
         >
+        <div class="section-title">修改管理密码</div>
+        <label>当前管理密码 <input id="set-current-admin-password" type="password" autocomplete="current-password" /></label>
+        <label>新管理密码 <input id="set-new-admin-password" type="password" autocomplete="new-password" placeholder="留空则不修改" /></label>
+        <label>确认新管理密码 <input id="set-confirm-admin-password" type="password" autocomplete="new-password" /></label>
         <label>企业微信 Key <input id="set-wecom" type="text" /></label>
         <div class="section-title">自定义 Webhook（优先于企业微信）</div>
         <label

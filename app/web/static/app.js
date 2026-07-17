@@ -6,6 +6,9 @@ const api = async (url, opts = {}) => {
     ...opts,
   });
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      location.href = res.status === 403 ? "/change-password" : "/login";
+    }
     const t = await res.text();
     throw new Error(t || res.statusText);
   }
@@ -356,6 +359,9 @@ $("#btn-settings").addEventListener("click", async () => {
   $("#set-webhook-method").value = s.custom_webhook_method || "POST";
   $("#set-webhook-headers").value = s.custom_webhook_headers || "";
   $("#set-webhook-body").value = s.custom_webhook_body || "";
+  $("#set-current-admin-password").value = "";
+  $("#set-new-admin-password").value = "";
+  $("#set-confirm-admin-password").value = "";
   $("#modal-settings").classList.remove("hidden");
 });
 $("#btn-save-settings").addEventListener("click", async () => {
@@ -371,6 +377,17 @@ $("#btn-save-settings").addEventListener("click", async () => {
     custom_webhook_body: $("#set-webhook-body").value.trim(),
   };
   try {
+    const currentPassword = $("#set-current-admin-password").value;
+    const newPassword = $("#set-new-admin-password").value;
+    const confirmPassword = $("#set-confirm-admin-password").value;
+    if (newPassword) {
+      if (!currentPassword) throw new Error("修改管理密码需要填写当前密码");
+      if (newPassword !== confirmPassword) throw new Error("两次输入的新管理密码不一致");
+      await api("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+    }
     await api("/api/settings", {
       method: "PUT",
       body: JSON.stringify({ values }),
@@ -381,6 +398,11 @@ $("#btn-save-settings").addEventListener("click", async () => {
   } catch (err) {
     alert("保存失败：" + err.message);
   }
+});
+
+$("#btn-logout").addEventListener("click", async () => {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
+  location.href = "/login";
 });
 
 $("#btn-clear-log").addEventListener("click", () => {

@@ -28,7 +28,9 @@ class SettingsUpdate(BaseModel):
 
 @router.get("")
 def get_settings() -> dict:
-    return repo.get_all_settings()
+    values = repo.get_all_settings()
+    values.pop("admin_password_hash", None)
+    return values
 
 
 @router.put("")
@@ -43,4 +45,4 @@ def update_settings(body: SettingsUpdate) -> dict:
         reschedule_all()
     except Exception:
         pass
-    return repo.get_all_settings()
+    return get_settings()
